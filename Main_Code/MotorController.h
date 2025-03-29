@@ -11,12 +11,13 @@ private:
     // Motor constraints
     static const int MIN_ANGLE = 0;
     static const int MAX_ANGLE = 90;
-    static const int MOVEMENT_DELAY_MS = 75; // Delay between movements
+    static const int MOVEMENT_DELAY_MS = 5000; // Reduced to 500ms for more responsive movement
 
     // Motor state
     int currentAngle;
     unsigned long lastMovementTime;
     MCP2515 &mcp2515;
+    bool isMoving;
 
     // CAN message structure
     struct can_frame canMsg;
@@ -50,9 +51,9 @@ private:
         Serial.println();
     }
 
-    void sendMotorCommand(int command)
+    bool sendMotorCommand(int command)
     {
-        Serial.print("Sending command: 0x");
+        Serial.print("\n--- Sending Motor Command: 0x");
         Serial.println(command, HEX);
 
         canMsg.can_id = 0x141;
@@ -61,7 +62,7 @@ private:
         switch (command)
         {
         case 0x81: // Stop command
-            Serial.println("Sending STOP command");
+            Serial.println("Command Type: STOP");
             canMsg.data[0] = 0x81;
             canMsg.data[1] = 0x00;
             canMsg.data[2] = 0x00;
@@ -70,11 +71,12 @@ private:
             canMsg.data[5] = 0x00;
             canMsg.data[6] = 0x00;
             canMsg.data[7] = 0x00;
+            isMoving = false;
             break;
 
         case 0x82: // Forward command
-            Serial.println("Sending FORWARD command");
-            canMsg.data[0] = 0x82;
+            Serial.println("Command Type: FORWARD");
+            canMsg.data[0] = 0xA1; // Changed to match RMD-X protocol
             canMsg.data[1] = 0x00;
             canMsg.data[2] = 0x00;
             canMsg.data[3] = 0x00;
@@ -82,11 +84,12 @@ private:
             canMsg.data[5] = 0x00;
             canMsg.data[6] = 0x00;
             canMsg.data[7] = 0x00;
+            isMoving = true;
             break;
 
         case 0x83: // Backward command
-            Serial.println("Sending BACKWARD command");
-            canMsg.data[0] = 0x83;
+            Serial.println("Command Type: BACKWARD");
+            canMsg.data[0] = 0xA2; // Changed to match RMD-X protocol
             canMsg.data[1] = 0x00;
             canMsg.data[2] = 0x00;
             canMsg.data[3] = 0x00;
@@ -94,12 +97,14 @@ private:
             canMsg.data[5] = 0x00;
             canMsg.data[6] = 0x00;
             canMsg.data[7] = 0x00;
+            isMoving = true;
             break;
 
         default: // Position command (0-90)
-            Serial.print("Sending POSITION command to angle: ");
+            Serial.println("Command Type: POSITION");
+            Serial.print("Target angle: ");
             Serial.println(command);
-            canMsg.data[0] = 0x84;           // Position command identifier
+            canMsg.data[0] = 0xA4;           // Changed to match RMD-X protocol
             canMsg.data[1] = command & 0xFF; // Target position (0-90)
             canMsg.data[2] = 0x00;
             canMsg.data[3] = 0x00;
@@ -113,10 +118,11 @@ private:
         printCANMessage("Sending");
 
         // Send command
-        if (!mcp2515.sendMessage(&canMsg))
+        bool success = mcp2515.sendMessage(&canMsg);
+        if (!success)
         {
-            Serial.println("Failed to send CAN message!");
-            return;
+            Serial.println("ERROR: Failed to send CAN message!");
+            return false;
         }
         Serial.println("CAN message sent successfully");
 
@@ -137,13 +143,16 @@ private:
 
         if (!gotResponse)
         {
-            Serial.println("No response received from motor!");
+            Serial.println("ERROR: No response received from motor!");
+            return false;
         }
+
+        return true;
     }
 
 public:
     MotorController(MCP2515 &canController)
-        : mcp2515(canController), currentAngle(0), lastMovementTime(0)
+        : mcp2515(canController), currentAngle(0), lastMovementTime(0), isMoving(false)
     {
         Serial.println("MotorController initialized");
         // Initialize motor to starting position
@@ -155,15 +164,24 @@ public:
         unsigned long currentTime = millis();
         if (currentTime - lastMovementTime < MOVEMENT_DELAY_MS)
         {
+            Serial.println("Waiting for movement delay...");
             return;
         }
 
         if (isWithinBounds(currentAngle + 1))
         {
             Serial.println("Moving forward");
-            moveMotorTo(currentAngle + 1);
-            currentAngle++;
-            lastMovementTime = currentTime;
+            if (sendMotorCommand(0x82))
+            { // Send forward command
+                currentAngle++;
+                lastMovementTime = currentTime;
+                Serial.print("Angle increased to: ");
+                Serial.println(currentAngle);
+            }
+        }
+        else
+        {
+            stop(); // Stop if we hit the limit
         }
     }
 
@@ -172,22 +190,38 @@ public:
         unsigned long currentTime = millis();
         if (currentTime - lastMovementTime < MOVEMENT_DELAY_MS)
         {
+            Serial.println("Waiting for movement delay...");
             return;
         }
 
         if (isWithinBounds(currentAngle - 1))
         {
             Serial.println("Moving backward");
-            moveMotorTo(currentAngle - 1);
-            currentAngle--;
-            lastMovementTime = currentTime;
+            if (sendMotorCommand(0x83))
+            { // Send backward command
+                currentAngle--;
+                lastMovementTime = currentTime;
+                Serial.print("Angle decreased to: ");
+                Serial.println(currentAngle);
+            }
+        }
+        else
+        {
+            stop(); // Stop if we hit the limit
         }
     }
 
     void stop()
     {
-        Serial.println("Stopping motor");
-        sendMotorCommand(0x81); // Stop command
+        if (isMoving)
+        {
+            Serial.println("Stopping motor");
+            if (sendMotorCommand(0x81))
+            { // Send stop command
+                isMoving = false;
+                Serial.println("Motor stopped");
+            }
+        }
     }
 
     // Function to move motor to specific angle
@@ -203,20 +237,27 @@ public:
         }
 
         // Send command to move to target angle
-        sendMotorCommand(targetAngle);
+        if (sendMotorCommand(targetAngle))
+        {
+            // Update current angle
+            currentAngle = targetAngle;
+            lastMovementTime = millis();
 
-        // Update current angle
-        currentAngle = targetAngle;
-        lastMovementTime = millis();
-
-        Serial.print("Current angle updated to: ");
-        Serial.println(currentAngle);
+            Serial.print("Current angle updated to: ");
+            Serial.println(currentAngle);
+        }
     }
 
     // Get current angle
     int getCurrentAngle() const
     {
         return currentAngle;
+    }
+
+    // Check if motor is currently moving
+    bool isMotorMoving() const
+    {
+        return isMoving;
     }
 };
 
