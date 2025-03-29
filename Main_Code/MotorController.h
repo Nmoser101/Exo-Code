@@ -24,17 +24,44 @@ private:
     // Helper functions
     bool isWithinBounds(int angle)
     {
-        return angle >= MIN_ANGLE && angle <= MAX_ANGLE;
+        bool valid = angle >= MIN_ANGLE && angle <= MAX_ANGLE;
+        if (!valid)
+        {
+            Serial.print("Angle out of bounds: ");
+            Serial.println(angle);
+        }
+        return valid;
+    }
+
+    void printCANMessage(const char *prefix)
+    {
+        Serial.print(prefix);
+        Serial.print(" CAN ID: 0x");
+        Serial.print(canMsg.can_id, HEX);
+        Serial.print(" Data: ");
+        for (int i = 0; i < 8; i++)
+        {
+            Serial.print("0x");
+            if (canMsg.data[i] < 0x10)
+                Serial.print("0");
+            Serial.print(canMsg.data[i], HEX);
+            Serial.print(" ");
+        }
+        Serial.println();
     }
 
     void sendMotorCommand(int command)
     {
+        Serial.print("Sending command: 0x");
+        Serial.println(command, HEX);
+
         canMsg.can_id = 0x141;
         canMsg.can_dlc = 0x08;
 
         switch (command)
         {
         case 0x81: // Stop command
+            Serial.println("Sending STOP command");
             canMsg.data[0] = 0x81;
             canMsg.data[1] = 0x00;
             canMsg.data[2] = 0x00;
@@ -46,6 +73,7 @@ private:
             break;
 
         case 0x82: // Forward command
+            Serial.println("Sending FORWARD command");
             canMsg.data[0] = 0x82;
             canMsg.data[1] = 0x00;
             canMsg.data[2] = 0x00;
@@ -57,6 +85,7 @@ private:
             break;
 
         case 0x83: // Backward command
+            Serial.println("Sending BACKWARD command");
             canMsg.data[0] = 0x83;
             canMsg.data[1] = 0x00;
             canMsg.data[2] = 0x00;
@@ -67,7 +96,9 @@ private:
             canMsg.data[7] = 0x00;
             break;
 
-        default:                             // Position command (0-90)
+        default: // Position command (0-90)
+            Serial.print("Sending POSITION command to angle: ");
+            Serial.println(command);
             canMsg.data[0] = 0x84;           // Position command identifier
             canMsg.data[1] = command & 0xFF; // Target position (0-90)
             canMsg.data[2] = 0x00;
@@ -79,17 +110,34 @@ private:
             break;
         }
 
+        printCANMessage("Sending");
+
         // Send command
-        mcp2515.sendMessage(&canMsg);
+        if (!mcp2515.sendMessage(&canMsg))
+        {
+            Serial.println("Failed to send CAN message!");
+            return;
+        }
+        Serial.println("CAN message sent successfully");
 
         // Wait for response
         int len = 10;
-        while ((mcp2515.readMessage(&canMsg) != MCP2515::ERROR_OK))
+        bool gotResponse = false;
+        while (len > 0)
         {
+            if (mcp2515.readMessage(&canMsg) == MCP2515::ERROR_OK)
+            {
+                printCANMessage("Received");
+                gotResponse = true;
+                break;
+            }
             delay(1);
             len--;
-            if (len <= 0)
-                break;
+        }
+
+        if (!gotResponse)
+        {
+            Serial.println("No response received from motor!");
         }
     }
 
@@ -97,61 +145,60 @@ public:
     MotorController(MCP2515 &canController)
         : mcp2515(canController), currentAngle(0), lastMovementTime(0)
     {
+        Serial.println("MotorController initialized");
         // Initialize motor to starting position
         moveMotorTo(0);
     }
 
-    // Main control function to be called in loop()
-    void update()
+    void moveForward()
     {
         unsigned long currentTime = millis();
-
-        // Check if enough time has passed since last movement
         if (currentTime - lastMovementTime < MOVEMENT_DELAY_MS)
         {
             return;
         }
 
-        // Read joystick input from CAN
-        if (mcp2515.readMessage(&canMsg) == MCP2515::ERROR_OK)
+        if (isWithinBounds(currentAngle + 1))
         {
-            // Assuming joystick input is in canMsg.data[0]
-            int joystickInput = canMsg.data[0];
-
-            // Process input
-            switch (joystickInput)
-            {
-            case 0: // Move backward
-                if (isWithinBounds(currentAngle - 1))
-                {
-                    moveMotorTo(currentAngle - 1);
-                    currentAngle--;
-                    lastMovementTime = currentTime;
-                }
-                break;
-
-            case 2: // Move forward
-                if (isWithinBounds(currentAngle + 1))
-                {
-                    moveMotorTo(currentAngle + 1);
-                    currentAngle++;
-                    lastMovementTime = currentTime;
-                }
-                break;
-
-            case 1: // No movement
-                // Stop motor
-                sendMotorCommand(0x81);
-                break;
-            }
+            Serial.println("Moving forward");
+            moveMotorTo(currentAngle + 1);
+            currentAngle++;
+            lastMovementTime = currentTime;
         }
+    }
+
+    void moveBackward()
+    {
+        unsigned long currentTime = millis();
+        if (currentTime - lastMovementTime < MOVEMENT_DELAY_MS)
+        {
+            return;
+        }
+
+        if (isWithinBounds(currentAngle - 1))
+        {
+            Serial.println("Moving backward");
+            moveMotorTo(currentAngle - 1);
+            currentAngle--;
+            lastMovementTime = currentTime;
+        }
+    }
+
+    void stop()
+    {
+        Serial.println("Stopping motor");
+        sendMotorCommand(0x81); // Stop command
     }
 
     // Function to move motor to specific angle
     void moveMotorTo(int targetAngle)
     {
+        Serial.print("Moving to angle: ");
+        Serial.println(targetAngle);
+
         if (!isWithinBounds(targetAngle))
         {
+            Serial.println("Target angle out of bounds, ignoring command");
             return; // Safety check
         }
 
@@ -161,6 +208,9 @@ public:
         // Update current angle
         currentAngle = targetAngle;
         lastMovementTime = millis();
+
+        Serial.print("Current angle updated to: ");
+        Serial.println(currentAngle);
     }
 
     // Get current angle
