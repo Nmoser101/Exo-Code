@@ -36,6 +36,10 @@ void setup()
 
   Serial.println("\n=== Hall Effect Sensor Test ===");
   Serial.println("Format: Raw (Hex) -> Voltage (V) -> Position");
+  Serial.println("Thresholds:");
+  Serial.println("BACKWARD: <2.20V");
+  Serial.println("NOTHING: 2.20V-3.00V");
+  Serial.println("FORWARD: >3.00V");
 }
 
 void loop()
@@ -46,11 +50,11 @@ void loop()
 
   // Determine position
   String position;
-  if (hallVolt > 3.20)
+  if (hallVolt > 3.00)
   {
     position = "FORWARD";
   }
-  else if (hallVolt < 2.00)
+  else if (hallVolt < 2.20)
   {
     position = "BACKWARD";
   }
