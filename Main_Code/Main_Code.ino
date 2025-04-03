@@ -12,119 +12,48 @@ MCP2515 mcp2515(10); // CS pin 10
 MotorController *motorController;
 
 // Constants
-const int CAN_LED = 8;                // LED pin on CAN shield
-const int HALL_SENSOR = A5;           // Analog pin 5 on CAN bus shield
-const float FORWARD_THRESHOLD = 2.0;  // Above 2.0V = Forward
-const float BACKWARD_THRESHOLD = 1.5; // Below 1.5V = Backward
-const int ANGLE_STEP = 5;             // Degrees to move per command
+const int CAN_LED = 8;      // LED pin on CAN shield
+const int HALL_SENSOR = A5; // Analog pin 0 for hall effect sensor
+const int ANGLE_STEP = 5;   // Degrees to move per command
+
+// Fixed thresholds based on observed values
+const float CENTER_VOLTAGE = 1.30;                               // Your observed resting voltage
+const float VOLTAGE_RANGE = 0.15;                                // Amount of change needed for movement
+const float FORWARD_THRESHOLD = CENTER_VOLTAGE + VOLTAGE_RANGE;  // Above this = Forward
+const float BACKWARD_THRESHOLD = CENTER_VOLTAGE - VOLTAGE_RANGE; // Below this = Backward
 
 // Motor position tracking
 int currentPosition = 1; // 1 = stop, 2 = forward, 3 = backward
 int currentAngle = 0;    // Current motor angle in degrees
+unsigned long lastPositionChange = 0;
 
 void setup()
 {
   Serial.begin(115200);
   delay(1000);
 
-  // Configure pins
-  pinMode(CAN_LED, OUTPUT);
-  pinMode(HALL_SENSOR, INPUT);
+  // Configure pin
+  pinMode(A0, INPUT);
 
-  Serial.println("\n=== Starting Motor Control Program ===");
-
-  // Initialize CAN controller
-  Serial.println("Initializing CAN controller...");
-  mcp2515.reset();
-  mcp2515.setBitrate(CAN_500KBPS, MCP_16MHZ);
-  mcp2515.setNormalMode();
-
-  // Create motor controller instance
-  Serial.println("Creating motor controller...");
-  motorController = new MotorController(mcp2515);
-
-  Serial.println("Setup complete!");
-  Serial.println("Waiting for hall effect input...");
-  Serial.println("Thresholds: <1.5V=Backward, >2.0V=Forward");
+  Serial.println("\n=== Starting Hall Effect Sensor Test ===");
+  Serial.println("Reading from analog pin A0");
+  Serial.println("Format: Raw Value -> Voltage (V)");
 }
 
 void loop()
 {
-  // Read hall effect sensor
-  int sensorValue = analogRead(HALL_SENSOR);
-  float voltage = sensorValue * (5.0 / 1023.0);
+  // Read hall effect sensor and calculate voltage
+  int hallSensor = analogRead(A0);
+  float hallVolt = hallSensor * (5.0 / 1023.0);
 
-  // Determine position based on voltage
-  int newPosition;
-  if (voltage > FORWARD_THRESHOLD)
-  {
-    newPosition = 2; // Forward
-  }
-  else if (voltage < BACKWARD_THRESHOLD)
-  {
-    newPosition = 3; // Backward
-  }
-  else
-  {
-    newPosition = 1; // Stop
-  }
+  // Print values
+  Serial.print("Raw: ");
+  Serial.print(hallSensor);
+  Serial.print(" -> ");
+  Serial.print(hallVolt, 2);
+  Serial.println("V");
 
-  // Print status
-  Serial.println("\n--- Status ---");
-  Serial.print("Voltage: ");
-  Serial.print(voltage, 2);
-  Serial.print("V -> Position: ");
-  switch (newPosition)
-  {
-  case 1:
-    Serial.println("STOP");
-    break;
-  case 2:
-    Serial.println("FORWARD");
-    break;
-  case 3:
-    Serial.println("BACKWARD");
-    break;
-  }
-
-  // Only act if position changed
-  if (newPosition != currentPosition)
-  {
-    currentPosition = newPosition;
-
-    switch (currentPosition)
-    {
-    case 2: // Forward
-      if (currentAngle < 90)
-      {
-        currentAngle += ANGLE_STEP;
-        Serial.print("Moving forward to angle: ");
-        Serial.println(currentAngle);
-        motorController->moveForward();
-      }
-      break;
-
-    case 3: // Backward
-      if (currentAngle > 0)
-      {
-        currentAngle -= ANGLE_STEP;
-        Serial.print("Moving backward to angle: ");
-        Serial.println(currentAngle);
-        motorController->moveBackward();
-      }
-      break;
-
-    case 1: // Stop
-      Serial.println("Stopping motor");
-      motorController->stop();
-      break;
-    }
-  }
-
-  // Visual feedback on LED
-  digitalWrite(CAN_LED, currentPosition != 1); // LED on when moving
-
-  delay(100); // Small delay between readings
+  delay(500); // Wait 500ms between readings
 }
 
 // Sets up so that Can's 8 bit is proccessed correctly
