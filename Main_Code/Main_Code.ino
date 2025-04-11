@@ -6,11 +6,9 @@
 // Libraries for using the CAN board
 #include <SPI.h>
 #include <mcp2515.h>
-#include "MotorController.h"
 
 struct can_frame canMsg;
 MCP2515 mcp2515(10); // CS pin 10
-MotorController *motorController;
 
 // Constants
 const int CAN_LED = 8;      // LED pin on CAN shield
@@ -23,14 +21,144 @@ const float BACKWARD_THRESHOLD = 2.20; // Below this = Backward
 // Motor position tracking
 int currentAngle = 0; // Current motor angle in degrees
 unsigned long lastCommandTime = 0;
-const unsigned long COMMAND_DELAY = 500; // Delay between commands in ms
+const unsigned long COMMAND_DELAY = 1000; // Delay between commands in ms
 
-// For debugging
-int failedCommandCount = 0;
-const int MAX_FAILED_COMMANDS = 10;
-bool motorActive = true;
-unsigned long lastSerialPrint = 0;
-const unsigned long SERIAL_PRINT_INTERVAL = 1000; // Print diagnostic info every 1 second
+// Function to print CAN messages for debugging
+void printCANMessage(unsigned long ID, unsigned char buf[8])
+{
+  Serial.print(ID, HEX);
+  Serial.print(": ");
+  for (int i = 0; i < 8; i++)
+  {
+    Serial.print(buf[i], HEX);
+    Serial.print("  ");
+  }
+  Serial.println();
+}
+
+// Function to send CAN message and receive response
+bool sendCANMessage(byte cmdByte, int value = 0)
+{
+  // Setup CAN message
+  canMsg.can_id = 0x141; // CAN motor identifier
+  canMsg.can_dlc = 0x08; // 8 bytes of data
+
+  canMsg.data[0] = cmdByte;
+
+  if (cmdByte == 0xA4)
+  { // Position command
+    // Convert angle to position value (0.01 degree per LSB)
+    int32_t posValue = value * 100; // Convert to 0.01 degree units
+
+    canMsg.data[1] = posValue & 0xFF;         // Position bytes 0-1 (LSB)
+    canMsg.data[2] = (posValue >> 8) & 0xFF;  // Position bytes 0-1
+    canMsg.data[3] = (posValue >> 16) & 0xFF; // Position bytes 2-3
+    canMsg.data[4] = (posValue >> 24) & 0xFF; // Position bytes 2-3 (MSB)
+    // Set a low max speed for safety (100 dps)
+    canMsg.data[5] = 0x64; // Max speed (100 dps) low byte
+    canMsg.data[6] = 0x00; // Max speed high byte
+    canMsg.data[7] = 0x00; // Reserved
+
+    Serial.print("Sending position command for angle: ");
+    Serial.println(value);
+  }
+  else
+  {
+    // Default all other bytes to zero for other commands
+    canMsg.data[1] = 0x00;
+    canMsg.data[2] = 0x00;
+    canMsg.data[3] = 0x00;
+    canMsg.data[4] = 0x00;
+    canMsg.data[5] = 0x00;
+    canMsg.data[6] = 0x00;
+    canMsg.data[7] = 0x00;
+  }
+
+  // Print the command being sent
+  Serial.print("Sending: ");
+  printCANMessage(canMsg.can_id, canMsg.data);
+
+  // Send the message
+  bool success = mcp2515.sendMessage(&canMsg);
+  if (!success)
+  {
+    Serial.println("ERROR: Failed to send CAN message!");
+    return false;
+  }
+  Serial.println("CAN message sent successfully");
+
+  // Wait for response similar to the working code
+  int len = 10;
+  while ((mcp2515.readMessage(&canMsg) != MCP2515::ERROR_OK))
+  {
+    /* checks for CAN response */
+    delay(1);
+    len--;
+    if ((len <= 0))
+    {
+      break;
+    }
+  }
+
+  if (len > 0)
+  {
+    // if an answer is received
+    Serial.print("Received: ");
+    printCANMessage(canMsg.can_id, canMsg.data);
+    return true;
+  }
+  else
+  {
+    // if no answer
+    Serial.println("ERROR: NO RESPONSE FROM MOTOR");
+    return false;
+  }
+}
+
+// Function to move motor forward one degree
+bool moveForward()
+{
+  if (currentAngle >= 90)
+  {
+    Serial.println("Maximum angle reached (90°), cannot move forward");
+    return false;
+  }
+
+  Serial.print("Moving forward from ");
+  Serial.print(currentAngle);
+  Serial.print("° to ");
+  Serial.print(currentAngle + 1);
+  Serial.println("°");
+
+  // Use absolute position command (0xA4) to move to new position
+  return sendCANMessage(0xA4, currentAngle + 1);
+}
+
+// Function to move motor backward one degree
+bool moveBackward()
+{
+  if (currentAngle <= 0)
+  {
+    Serial.println("Minimum angle reached (0°), cannot move backward");
+    return false;
+  }
+
+  Serial.print("Moving backward from ");
+  Serial.print(currentAngle);
+  Serial.print("° to ");
+  Serial.print(currentAngle - 1);
+  Serial.println("°");
+
+  // Use absolute position command (0xA4) to move to new position
+  return sendCANMessage(0xA4, currentAngle - 1);
+}
+
+// Function to stop the motor
+bool stopMotor()
+{
+  Serial.println("Stopping motor");
+  return sendCANMessage(0x81); // Stop command
+}
 
 void setup()
 {
@@ -38,27 +166,22 @@ void setup()
   delay(1000);
 
   Serial.println("\n=== Exoskeleton Motor Control System ===");
-  Serial.println("Based on RMD-X Motor Protocol");
 
   // Configure pins
   pinMode(CAN_LED, OUTPUT);
   pinMode(HALL_SENSOR, INPUT);
 
-  Serial.println("\nThresholds:");
+  Serial.println("Thresholds:");
   Serial.println("BACKWARD: <2.20V");
   Serial.println("NOTHING: 2.20V-3.00V");
   Serial.println("FORWARD: >3.00V");
 
-  // Initialize CAN controller
-  Serial.println("\nInitializing CAN controller...");
+  // Initialize CAN controller using same settings as working code
+  Serial.println("Initializing CAN controller...");
   mcp2515.reset();
   mcp2515.setBitrate(CAN_500KBPS, MCP_16MHZ);
   mcp2515.setNormalMode();
   Serial.println("CAN controller initialized");
-
-  // Create motor controller instance
-  Serial.println("Creating motor controller...");
-  motorController = new MotorController(mcp2515);
 
   // Flash LED to indicate ready
   for (int i = 0; i < 3; i++)
@@ -69,7 +192,10 @@ void setup()
     delay(100);
   }
 
-  Serial.println("\nSetup complete!");
+  // Stop the motor to ensure it's in a known state
+  stopMotor();
+
+  Serial.println("Setup complete!");
 }
 
 // Get average of multiple hall sensor readings for stability
@@ -95,165 +221,62 @@ void loop()
 
   // Read hall effect sensor with averaging for stability
   float hallVolt = getHallVoltage();
+  int hallSensor = analogRead(HALL_SENSOR);
 
-  // Print diagnostic info at regular intervals rather than every loop
-  if (currentTime - lastSerialPrint >= SERIAL_PRINT_INTERVAL)
+  // Print status periodically
+  Serial.print("Hall Sensor: 0x");
+  Serial.print(hallSensor, HEX);
+  Serial.print(" -> ");
+  Serial.print(hallVolt, 2);
+  Serial.print("V -> ");
+
+  if (hallVolt > FORWARD_THRESHOLD)
   {
-    // Get raw reading for diagnostic output
-    int hallSensor = analogRead(HALL_SENSOR);
-
-    // Print status information
-    Serial.print("\n----- STATUS -----\n");
-    Serial.print("Raw Hall: 0x");
-    Serial.print(hallSensor, HEX);
-    Serial.print(" -> ");
-    Serial.print(hallVolt, 2);
-    Serial.print("V");
-
-    if (hallVolt > FORWARD_THRESHOLD)
-    {
-      Serial.println(" (FORWARD)");
-    }
-    else if (hallVolt < BACKWARD_THRESHOLD)
-    {
-      Serial.println(" (BACKWARD)");
-    }
-    else
-    {
-      Serial.println(" (NEUTRAL)");
-    }
-
-    Serial.print("Current Angle: ");
-    Serial.print(currentAngle);
-    Serial.print("° (Motor reports: ");
-    Serial.print(motorController->getCurrentAngle());
-    Serial.println("°)");
-
-    Serial.print("Motor Active: ");
-    Serial.println(motorActive ? "YES" : "NO");
-
-    Serial.print("Failed Commands: ");
-    Serial.println(failedCommandCount);
-
-    lastSerialPrint = currentTime;
+    Serial.print("FORWARD");
+  }
+  else if (hallVolt < BACKWARD_THRESHOLD)
+  {
+    Serial.print("BACKWARD");
+  }
+  else
+  {
+    Serial.print("NEUTRAL");
   }
 
-  // Check if motor is active and time to process a command
-  if (motorActive && currentTime - lastCommandTime >= COMMAND_DELAY)
+  Serial.print(" (Current Angle: ");
+  Serial.print(currentAngle);
+  Serial.println("°)");
+
+  // Check if it's time to process a new command
+  if (currentTime - lastCommandTime >= COMMAND_DELAY)
   {
     if (hallVolt > FORWARD_THRESHOLD)
     {
-      // FORWARD: Move 1 degree forward
-      int targetAngle = currentAngle + 1;
-
-      // Ensure we stay within bounds
-      if (targetAngle <= 90)
+      // Forward motion - increment angle by 1 degree
+      if (moveForward())
       {
-        Serial.print("\nMoving FORWARD from ");
-        Serial.print(currentAngle);
-        Serial.print("° to ");
-        Serial.println(targetAngle);
-
-        // Try direct torque control instead of position
-        bool result = motorController->moveForward();
-
-        if (result)
-        {
-          currentAngle = targetAngle;
-          digitalWrite(CAN_LED, HIGH);
-          failedCommandCount = 0; // Reset counter on success
-        }
-        else
-        {
-          failedCommandCount++;
-          Serial.println("WARNING: Forward movement failed");
-        }
+        currentAngle++;
+        digitalWrite(CAN_LED, HIGH);
       }
-      else
-      {
-        Serial.println("\nMaximum angle reached (90°)");
-      }
-
-      lastCommandTime = currentTime;
     }
     else if (hallVolt < BACKWARD_THRESHOLD)
     {
-      // BACKWARD: Move 1 degree backward
-      int targetAngle = currentAngle - 1;
-
-      // Ensure we stay within bounds
-      if (targetAngle >= 0)
+      // Backward motion - decrement angle by 1 degree
+      if (moveBackward())
       {
-        Serial.print("\nMoving BACKWARD from ");
-        Serial.print(currentAngle);
-        Serial.print("° to ");
-        Serial.println(targetAngle);
-
-        // Try direct torque control instead of position
-        bool result = motorController->moveBackward();
-
-        if (result)
-        {
-          currentAngle = targetAngle;
-          digitalWrite(CAN_LED, HIGH);
-          failedCommandCount = 0; // Reset counter on success
-        }
-        else
-        {
-          failedCommandCount++;
-          Serial.println("WARNING: Backward movement failed");
-        }
+        currentAngle--;
+        digitalWrite(CAN_LED, HIGH);
       }
-      else
-      {
-        Serial.println("\nMinimum angle reached (0°)");
-      }
-
-      lastCommandTime = currentTime;
     }
     else
     {
-      // NEUTRAL: No movement
+      // No motion - turn off LED
       digitalWrite(CAN_LED, LOW);
     }
 
-    // Safety check - if too many commands fail, stop trying
-    if (failedCommandCount >= MAX_FAILED_COMMANDS)
-    {
-      motorActive = false;
-      Serial.println("\n!!! CRITICAL ERROR !!!");
-      Serial.println("Too many failed commands. Motor control disabled.");
-      Serial.println("Reset the system to try again.");
-
-      // Rapid flash pattern to indicate error
-      for (int i = 0; i < 10; i++)
-      {
-        digitalWrite(CAN_LED, HIGH);
-        delay(50);
-        digitalWrite(CAN_LED, LOW);
-        delay(50);
-      }
-    }
+    lastCommandTime = currentTime;
   }
 
   // Small delay for stability
-  delay(10);
-}
-
-// Helper function to print CAN messages for debugging
-void printCANMessage(unsigned long ID, unsigned char buf[8], const char *prefix)
-{
-  Serial.print(prefix);
-  Serial.print(" CAN ID: 0x");
-  Serial.print(ID, HEX);
-  Serial.print(" Data: ");
-  for (int i = 0; i < 8; i++)
-  {
-    Serial.print("0x");
-    if (buf[i] < 0x10)
-      Serial.print("0");
-    Serial.print(buf[i], HEX);
-    Serial.print(" ");
-  }
-  Serial.println();
+  delay(100);
 }
