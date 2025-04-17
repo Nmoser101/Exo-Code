@@ -33,6 +33,8 @@ bool tryDifferentIds = true;
 unsigned long lastIdChangeTime = 0;
 const unsigned long ID_CHANGE_INTERVAL = 10000; // 10 seconds
 
+int incomingByte = 1; // Default to STOP
+
 // Function to print CAN messages for debugging
 void printCANMessage(unsigned long ID, unsigned char buf[8])
 {
@@ -279,12 +281,6 @@ bool moveForward()
 // Try different approaches to move the motor backward
 bool moveBackward()
 {
-  if (currentAngle <= 0)
-  {
-    Serial.println("Minimum angle reached (0°), cannot move backward");
-    return false;
-  }
-
   Serial.print("Moving backward from ");
   Serial.print(currentAngle);
   Serial.print("° to ");
@@ -325,10 +321,22 @@ bool moveBackward()
   return result;
 }
 
+void printserial(unsigned long ID, unsigned char buf[8])
+{
+  Serial.print(ID, HEX);
+  Serial.print(": ");
+  for (int i = 0; i < 8; i++)
+  {
+    Serial.print(buf[i], HEX);
+    Serial.print("  ");
+  }
+}
+
 void setup()
 {
+  while (!Serial)
+    ;
   Serial.begin(115200);
-  delay(1000);
 
   Serial.println("\n=== Exoskeleton Motor Control System ===");
   Serial.println("Using Whiteboard Commands");
@@ -371,6 +379,9 @@ void setup()
   // Send initial stop command
   Serial.println("\n--- INITIAL STOP COMMAND ---");
   stopMotor();
+
+  Serial.println("Setup done");
+  Serial.println("Send 1=STOP, 2=FORWARD, 3=BACKWARD via Serial Monitor");
 }
 
 // Get average of multiple hall sensor readings for stability
@@ -391,106 +402,78 @@ float getHallVoltage()
 
 void loop()
 {
-  // Get current time for timing operations
-  unsigned long currentTime = millis();
-
-  // Try different motor IDs if enabled
-  if (tryDifferentIds && (currentTime - lastIdChangeTime >= ID_CHANGE_INTERVAL))
-  {
-    // Cycle through IDs: 0x140, 0x141, 0x142, 0x143
-    motorId = (motorId >= 0x143) ? 0x140 : motorId + 1;
-
-    Serial.print("\n*** SWITCHING TO MOTOR ID 0x");
-    Serial.print(motorId, HEX);
-    Serial.println(" ***\n");
-
-    // Reset with a read status command when changing IDs
-    readMotorStatus();
-
-    lastIdChangeTime = currentTime;
-    retryCount = 0; // Reset retry count on ID change
-  }
-
-  // Read hall effect sensor with averaging for stability
   float hallVolt = getHallVoltage();
   int hallSensor = analogRead(HALL_SENSOR);
 
-  // Print status information
   Serial.print("Hall: 0x");
   Serial.print(hallSensor, HEX);
   Serial.print(" -> ");
   Serial.print(hallVolt, 2);
   Serial.print("V -> ");
 
+  canMsg.can_id = 0x141;
+  canMsg.can_dlc = 0x08;
+
   if (hallVolt > FORWARD_THRESHOLD)
   {
     Serial.print("FORWARD");
+    canMsg.data[0] = 0xA1;
+    canMsg.data[1] = 0x00;
+    canMsg.data[2] = 0x00;
+    canMsg.data[3] = 0x00;
+    canMsg.data[4] = 0x64; // +1A torque
+    canMsg.data[5] = 0x00;
+    canMsg.data[6] = 0x00;
+    canMsg.data[7] = 0x00;
+    digitalWrite(CAN_LED, HIGH);
   }
   else if (hallVolt < BACKWARD_THRESHOLD)
   {
     Serial.print("BACKWARD");
+    canMsg.data[0] = 0xA1;
+    canMsg.data[1] = 0x00;
+    canMsg.data[2] = 0x00;
+    canMsg.data[3] = 0x00;
+    canMsg.data[4] = 0x9C; // -1A torque (0xFF9C = -100)
+    canMsg.data[5] = 0xFF;
+    canMsg.data[6] = 0x00;
+    canMsg.data[7] = 0x00;
+    digitalWrite(CAN_LED, HIGH);
   }
   else
   {
     Serial.print("NEUTRAL");
+    canMsg.data[0] = 0x81; // STOP
+    for (int i = 1; i < 8; i++)
+      canMsg.data[i] = 0x00;
+    digitalWrite(CAN_LED, LOW);
   }
 
-  Serial.print(" (Angle: ");
-  Serial.print(currentAngle);
-  Serial.print("°, Approach: ");
-  Serial.print(commandApproach);
-  Serial.print(", ID: 0x");
-  Serial.print(motorId, HEX);
-  Serial.println(")");
+  Serial.println();
 
-  // Check if it's time to process a new command
-  if (currentTime - lastCommandTime >= COMMAND_DELAY)
+  mcp2515.sendMessage(&canMsg);
+  printserial(canMsg.can_id, canMsg.data);
+  Serial.println();
+
+  // Wait for response
+  int len = 10;
+  while ((mcp2515.readMessage(&canMsg) != MCP2515::ERROR_OK))
   {
-    // Change approach if we've failed multiple times
-    if (retryCount >= MAX_RETRIES)
-    {
-      commandApproach = (commandApproach + 1) % 5; // Now using 5 approaches
-      Serial.print("\n*** SWITCHING TO APPROACH ");
-      Serial.print(commandApproach);
-      Serial.println(" ***\n");
-      retryCount = 0;
-    }
-
-    bool result = false;
-
-    if (hallVolt > FORWARD_THRESHOLD)
-    {
-      // Forward motion - increment angle by 1 degree
-      result = moveForward();
-      if (result && responseReceived)
-      {
-        currentAngle++;
-        digitalWrite(CAN_LED, HIGH);
-      }
-    }
-    else if (hallVolt < BACKWARD_THRESHOLD)
-    {
-      // Backward motion - decrement angle by 1 degree
-      result = moveBackward();
-      if (result && responseReceived)
-      {
-        currentAngle--;
-        digitalWrite(CAN_LED, HIGH);
-      }
-    }
-    else
-    {
-      // No motion - read motor status
-      if (commandApproach >= 3)
-      { // Only for read approaches
-        result = readMotorStatus();
-      }
-      digitalWrite(CAN_LED, LOW);
-    }
-
-    lastCommandTime = currentTime;
+    delay(1);
+    len--;
+    if (len <= 0)
+      break;
+  }
+  if (len > 0)
+  {
+    Serial.print("Recv: ");
+    printserial(canMsg.can_id, canMsg.data);
+    Serial.println();
+  }
+  else
+  {
+    Serial.println("Recv: NO ANSWER");
   }
 
-  // Small delay for stability
   delay(100);
 }
