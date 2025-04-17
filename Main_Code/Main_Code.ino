@@ -19,7 +19,7 @@ const float FORWARD_THRESHOLD = 3.00;  // Above this = Forward
 const float BACKWARD_THRESHOLD = 2.20; // Below this = Backward
 
 // Motor position tracking
-int currentAngle = 0; // Current motor angle in degrees
+int currentAngle = 45; // Current motor angle in degrees, start at 45
 unsigned long lastCommandTime = 0;
 const unsigned long COMMAND_DELAY = 1000; // Delay between commands in ms
 
@@ -417,39 +417,49 @@ void loop()
   if (hallVolt > FORWARD_THRESHOLD)
   {
     Serial.print("FORWARD");
-    canMsg.data[0] = 0xA1;
-    canMsg.data[1] = 0x00;
-    canMsg.data[2] = 0x00;
-    canMsg.data[3] = 0x00;
-    canMsg.data[4] = 0x64; // +1A torque
-    canMsg.data[5] = 0x00;
-    canMsg.data[6] = 0x00;
-    canMsg.data[7] = 0x00;
-    digitalWrite(CAN_LED, HIGH);
+    if (currentAngle < 90)
+    {
+      currentAngle++;
+    }
   }
   else if (hallVolt < BACKWARD_THRESHOLD)
   {
     Serial.print("BACKWARD");
-    canMsg.data[0] = 0xA1;
-    canMsg.data[1] = 0x00;
-    canMsg.data[2] = 0x00;
-    canMsg.data[3] = 0x00;
-    canMsg.data[4] = 0x9C; // -1A torque (0xFF9C = -100)
-    canMsg.data[5] = 0xFF;
-    canMsg.data[6] = 0x00;
-    canMsg.data[7] = 0x00;
-    digitalWrite(CAN_LED, HIGH);
+    if (currentAngle > 0)
+    {
+      currentAngle--;
+    }
   }
   else
   {
     Serial.print("NEUTRAL");
-    canMsg.data[0] = 0x81; // STOP
-    for (int i = 1; i < 8; i++)
-      canMsg.data[i] = 0x00;
+    // Hold position (do not change currentAngle)
+  }
+
+  // Encode position command (0xA4) with currentAngle
+  int32_t posValue = (90 - currentAngle) * 100; // 0.01 degree per LSB, reversed
+  canMsg.data[0] = 0xA4;                        // Command byte for position control
+  canMsg.data[1] = 0x00;                        // NULL
+  canMsg.data[2] = 0xF4;                        // Speed limit low byte (500dps)
+  canMsg.data[3] = 0x01;                        // Speed limit high byte (500dps)
+  canMsg.data[4] = posValue & 0xFF;             // Position byte 1 (LSB)
+  canMsg.data[5] = (posValue >> 8) & 0xFF;      // Position byte 2
+  canMsg.data[6] = (posValue >> 16) & 0xFF;     // Position byte 3
+  canMsg.data[7] = (posValue >> 24) & 0xFF;     // Position byte 4 (MSB)
+
+  // LED feedback
+  if (hallVolt > FORWARD_THRESHOLD || hallVolt < BACKWARD_THRESHOLD)
+  {
+    digitalWrite(CAN_LED, HIGH);
+  }
+  else
+  {
     digitalWrite(CAN_LED, LOW);
   }
 
-  Serial.println();
+  Serial.print(" | Target Angle: ");
+  Serial.print(currentAngle);
+  Serial.println("°");
 
   mcp2515.sendMessage(&canMsg);
   printserial(canMsg.can_id, canMsg.data);
