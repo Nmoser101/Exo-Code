@@ -19,7 +19,9 @@ const float FORWARD_THRESHOLD = 3.00;  // Above this = Forward
 const float BACKWARD_THRESHOLD = 2.20; // Below this = Backward
 
 // Motor position tracking
-int currentAngle = 45; // Current motor angle in degrees, start at 45
+int currentAngle = 135;    // Current motor angle in degrees, start at 135 (middle of 90-180 range)
+int referenceAngle = 90;   // Reference angle for relative positioning
+bool referenceSet = false; // Flag to track if reference position has been set
 unsigned long lastCommandTime = 0;
 const unsigned long COMMAND_DELAY = 1000; // Delay between commands in ms
 
@@ -232,9 +234,9 @@ bool stopMotor()
 // Try different approaches to move the motor forward
 bool moveForward()
 {
-  if (currentAngle >= 90)
+  if (currentAngle >= 180)
   {
-    Serial.println("Maximum angle reached (90°), cannot move forward");
+    Serial.println("Maximum angle reached (180°), cannot move forward");
     return false;
   }
 
@@ -281,6 +283,12 @@ bool moveForward()
 // Try different approaches to move the motor backward
 bool moveBackward()
 {
+  if (currentAngle <= 90)
+  {
+    Serial.println("Minimum angle reached (90°), cannot move backward");
+    return false;
+  }
+
   Serial.print("Moving backward from ");
   Serial.print(currentAngle);
   Serial.print("° to ");
@@ -380,6 +388,25 @@ void setup()
   Serial.println("\n--- INITIAL STOP COMMAND ---");
   stopMotor();
 
+  // Set initial position to 135 degrees
+  Serial.println("\n--- SETTING INITIAL POSITION TO 135 DEGREES ---");
+  canMsg.can_id = motorId;
+  canMsg.can_dlc = 0x08;
+  canMsg.data[0] = 0x4A; // Position command
+  canMsg.data[1] = 0x00; // Null
+  canMsg.data[2] = 0xF4; // Speed low byte (500 dps)
+  canMsg.data[3] = 0x01; // Speed high byte
+
+  // Set position to 135 degrees (13500 in 0.01 degree units)
+  int32_t initialPos = 13500;
+  canMsg.data[4] = initialPos & 0xFF;         // Position byte 1 (LSB)
+  canMsg.data[5] = (initialPos >> 8) & 0xFF;  // Position byte 2
+  canMsg.data[6] = (initialPos >> 16) & 0xFF; // Position byte 3
+  canMsg.data[7] = (initialPos >> 24) & 0xFF; // Position byte 4 (MSB)
+
+  mcp2515.sendMessage(&canMsg);
+  delay(2000); // Wait longer for motor to reach initial position
+
   Serial.println("Setup done");
   Serial.println("Send 1=STOP, 2=FORWARD, 3=BACKWARD via Serial Monitor");
 }
@@ -417,7 +444,7 @@ void loop()
   if (hallVolt > FORWARD_THRESHOLD)
   {
     Serial.print("FORWARD");
-    if (currentAngle < 90)
+    if (currentAngle < 180)
     {
       currentAngle++;
     }
@@ -425,7 +452,7 @@ void loop()
   else if (hallVolt < BACKWARD_THRESHOLD)
   {
     Serial.print("BACKWARD");
-    if (currentAngle > 0)
+    if (currentAngle > 90)
     {
       currentAngle--;
     }
@@ -436,16 +463,16 @@ void loop()
     // Hold position (do not change currentAngle)
   }
 
-  // Encode position command (0xA4) with currentAngle
-  int32_t posValue = (90 - currentAngle) * 100; // 0.01 degree per LSB, reversed
-  canMsg.data[0] = 0xA4;                        // Command byte for position control
-  canMsg.data[1] = 0x00;                        // NULL
-  canMsg.data[2] = 0xF4;                        // Speed limit low byte (500dps)
-  canMsg.data[3] = 0x01;                        // Speed limit high byte (500dps)
-  canMsg.data[4] = posValue & 0xFF;             // Position byte 1 (LSB)
-  canMsg.data[5] = (posValue >> 8) & 0xFF;      // Position byte 2
-  canMsg.data[6] = (posValue >> 16) & 0xFF;     // Position byte 3
-  canMsg.data[7] = (posValue >> 24) & 0xFF;     // Position byte 4 (MSB)
+  // Calculate position value (0.01 degree per LSB)
+  int32_t posValue = currentAngle * 100;
+  canMsg.data[0] = 0xA4;                    // Command byte for position control
+  canMsg.data[1] = 0x00;                    // NULL
+  canMsg.data[2] = 0xF4;                    // Speed limit low byte (500dps)
+  canMsg.data[3] = 0x01;                    // Speed limit high byte (500dps)
+  canMsg.data[4] = posValue & 0xFF;         // Position byte 1 (LSB)
+  canMsg.data[5] = (posValue >> 8) & 0xFF;  // Position byte 2
+  canMsg.data[6] = (posValue >> 16) & 0xFF; // Position byte 3
+  canMsg.data[7] = (posValue >> 24) & 0xFF; // Position byte 4 (MSB)
 
   // LED feedback
   if (hallVolt > FORWARD_THRESHOLD || hallVolt < BACKWARD_THRESHOLD)
