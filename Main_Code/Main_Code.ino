@@ -14,9 +14,12 @@ MCP2515 mcp2515(10); // CS pin 10
 const int CAN_LED = 8;      // LED pin on CAN shield
 const int HALL_SENSOR = A0; // Analog pin 0 for hall effect sensor
 
-// Thresholds based on observed values
-const float FORWARD_THRESHOLD = 3.00;  // Above this = Forward
-const float BACKWARD_THRESHOLD = 2.20; // Below this = Backward
+// New voltage thresholds for different rates
+const float THRESHOLD_1 = 1.0; // 0-1V: 3 degrees
+const float THRESHOLD_2 = 2.0; // 1-2V: 1 degree
+const float THRESHOLD_3 = 3.0; // 2-3V: no change
+const float THRESHOLD_4 = 4.0; // 3-4V: 1 degree
+// 4-5V: 3 degrees
 
 // Motor position tracking
 int currentAngle = 135;    // Current motor angle in degrees, start at 135 (middle of 90-180 range)
@@ -441,26 +444,45 @@ void loop()
   canMsg.can_id = 0x141;
   canMsg.can_dlc = 0x08;
 
-  if (hallVolt > FORWARD_THRESHOLD)
+  // Determine rate of change based on voltage range
+  int rateOfChange = 0;
+
+  if (hallVolt < THRESHOLD_1)
   {
-    Serial.print("FORWARD");
-    if (currentAngle < 180)
-    {
-      currentAngle++;
-    }
+    // 0-1V: 3 degrees backward
+    rateOfChange = -3;
+    Serial.print("BACKWARD (3°)");
   }
-  else if (hallVolt < BACKWARD_THRESHOLD)
+  else if (hallVolt < THRESHOLD_2)
   {
-    Serial.print("BACKWARD");
-    if (currentAngle > 90)
-    {
-      currentAngle--;
-    }
+    // 1-2V: 1 degree backward
+    rateOfChange = -1;
+    Serial.print("BACKWARD (1°)");
+  }
+  else if (hallVolt < THRESHOLD_3)
+  {
+    // 2-3V: no change
+    rateOfChange = 0;
+    Serial.print("NEUTRAL");
+  }
+  else if (hallVolt < THRESHOLD_4)
+  {
+    // 3-4V: 1 degree forward
+    rateOfChange = 1;
+    Serial.print("FORWARD (1°)");
   }
   else
   {
-    Serial.print("NEUTRAL");
-    // Hold position (do not change currentAngle)
+    // 4-5V: 3 degrees forward
+    rateOfChange = 3;
+    Serial.print("FORWARD (3°)");
+  }
+
+  // Update current angle with bounds checking
+  int newAngle = currentAngle + rateOfChange;
+  if (newAngle >= 90 && newAngle <= 180)
+  {
+    currentAngle = newAngle;
   }
 
   // Calculate position value (0.01 degree per LSB)
@@ -475,7 +497,7 @@ void loop()
   canMsg.data[7] = (posValue >> 24) & 0xFF; // Position byte 4 (MSB)
 
   // LED feedback
-  if (hallVolt > FORWARD_THRESHOLD || hallVolt < BACKWARD_THRESHOLD)
+  if (rateOfChange != 0)
   {
     digitalWrite(CAN_LED, HIGH);
   }
