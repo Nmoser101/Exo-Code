@@ -22,8 +22,8 @@ const float THRESHOLD_4 = 4.0; // 3-4V: 1 degree
 // 4-5V: 3 degrees
 
 // Motor position tracking
-int currentAngle = 135;    // Current motor angle in degrees, start at 135 (middle of 90-180 range)
-int referenceAngle = 90;   // Reference angle for relative positioning
+int currentAngle = 35;     // Current motor angle in degrees, start at 35 (middle of -10 to 80 range)
+int referenceAngle = -10;  // Reference angle for relative positioning
 bool referenceSet = false; // Flag to track if reference position has been set
 unsigned long lastCommandTime = 0;
 const unsigned long COMMAND_DELAY = 1000; // Delay between commands in ms
@@ -237,9 +237,9 @@ bool stopMotor()
 // Try different approaches to move the motor forward
 bool moveForward()
 {
-  if (currentAngle >= 180)
+  if (currentAngle >= 80)
   {
-    Serial.println("Maximum angle reached (180°), cannot move forward");
+    Serial.println("Maximum angle reached (80°), cannot move forward");
     return false;
   }
 
@@ -286,9 +286,9 @@ bool moveForward()
 // Try different approaches to move the motor backward
 bool moveBackward()
 {
-  if (currentAngle <= 90)
+  if (currentAngle <= -10)
   {
-    Serial.println("Minimum angle reached (90°), cannot move backward");
+    Serial.println("Minimum angle reached (-10°), cannot move backward");
     return false;
   }
 
@@ -391,8 +391,8 @@ void setup()
   Serial.println("\n--- INITIAL STOP COMMAND ---");
   stopMotor();
 
-  // Set initial position to 135 degrees
-  Serial.println("\n--- SETTING INITIAL POSITION TO 135 DEGREES ---");
+  // Set initial position to 35 degrees
+  Serial.println("\n--- SETTING INITIAL POSITION TO 35 DEGREES ---");
   canMsg.can_id = motorId;
   canMsg.can_dlc = 0x08;
   canMsg.data[0] = 0x4A; // Position command
@@ -400,8 +400,8 @@ void setup()
   canMsg.data[2] = 0xF4; // Speed low byte (500 dps)
   canMsg.data[3] = 0x01; // Speed high byte
 
-  // Set position to 135 degrees (13500 in 0.01 degree units)
-  int32_t initialPos = 13500;
+  // Set position to 35 degrees (3500 in 0.01 degree units)
+  int32_t initialPos = 3500;
   canMsg.data[4] = initialPos & 0xFF;         // Position byte 1 (LSB)
   canMsg.data[5] = (initialPos >> 8) & 0xFF;  // Position byte 2
   canMsg.data[6] = (initialPos >> 16) & 0xFF; // Position byte 3
@@ -480,7 +480,7 @@ void loop()
 
   // Update current angle with bounds checking
   int newAngle = currentAngle + rateOfChange;
-  if (newAngle >= 90 && newAngle <= 180)
+  if (newAngle >= -10 && newAngle <= 80)
   {
     currentAngle = newAngle;
   }
